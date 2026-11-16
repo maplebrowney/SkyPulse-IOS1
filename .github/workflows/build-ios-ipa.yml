@@ -87,68 +87,64 @@ jobs:
           xcodegen generate
           chmod +x scripts/package-sidestore-ipa.sh
 
-      - name: Import Apple Signing Certificate (optional .p12 mode)
-        if: ${{ env.SIGNING_MODE == 'apple-cert-p12' && secrets.APPLE_P12_BASE64 != '' }}
+      - name: Build & Package IPA (SideStore Unsigned or .p12 Signed)
+        working-directory: ios-wrapper
         env:
           APPLE_P12_BASE64: ${{ secrets.APPLE_P12_BASE64 }}
           APPLE_P12_PASSWORD: ${{ secrets.APPLE_P12_PASSWORD }}
           APPLE_PROVISION_BASE64: ${{ secrets.APPLE_PROVISION_BASE64 }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          P12_PATH=$RUNNER_TEMP/certificate.p12
-          PP_PATH=$RUNNER_TEMP/profile.mobileprovision
+          if [ "${SIGNING_MODE}" = "apple-cert-p12" ] && [ -n "${APPLE_P12_BASE64:-}" ]; then
+            echo "==> Importing Apple .p12 signing certificate"
+            KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+            P12_PATH=$RUNNER_TEMP/certificate.p12
+            PP_PATH=$RUNNER_TEMP/profile.mobileprovision
 
-          echo "$APPLE_P12_BASE64" | base64 --decode > "$P12_PATH"
-          echo "$APPLE_PROVISION_BASE64" | base64 --decode > "$PP_PATH"
+            echo "$APPLE_P12_BASE64" | base64 --decode > "$P12_PATH"
+            echo "$APPLE_PROVISION_BASE64" | base64 --decode > "$PP_PATH"
 
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$P12_PATH" -P "$APPLE_P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+            security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+            security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+            security import "$P12_PATH" -P "$APPLE_P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            security list-keychain -d user -s "$KEYCHAIN_PATH"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin <<< $(security cms -D -i "$PP_PATH"))
-          cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/"$UUID.mobileprovision"
+            mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+            UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin <<< $(security cms -D -i "$PP_PATH"))
+            cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/"$UUID.mobileprovision"
 
-      - name: Archive Signed IPA (when .p12 secrets present)
-        if: ${{ env.SIGNING_MODE == 'apple-cert-p12' && secrets.APPLE_P12_BASE64 != '' }}
-        working-directory: ios-wrapper
-        run: |
-          xcodebuild archive \
-            -project "${PRODUCT_NAME}.xcodeproj" \
-            -scheme "${PRODUCT_NAME}" \
-            -configuration Release \
-            -destination "generic/platform=iOS" \
-            -archivePath "build/${PRODUCT_NAME}.xcarchive" \
-            MARKETING_VERSION="${APP_VERSION}"
+            xcodebuild archive \
+              -project "${PRODUCT_NAME}.xcodeproj" \
+              -scheme "${PRODUCT_NAME}" \
+              -configuration Release \
+              -destination "generic/platform=iOS" \
+              -archivePath "build/${PRODUCT_NAME}.xcarchive" \
+              MARKETING_VERSION="${APP_VERSION}"
 
-          xcodebuild -exportArchive \
-            -archivePath "build/${PRODUCT_NAME}.xcarchive" \
-            -exportOptionsPlist "ExportOptions.plist" \
-            -exportPath "build/ipa-export"
+            xcodebuild -exportArchive \
+              -archivePath "build/${PRODUCT_NAME}.xcarchive" \
+              -exportOptionsPlist "ExportOptions.plist" \
+              -exportPath "build/ipa-export"
 
-          mv build/ipa-export/*.ipa "build/${PRODUCT_NAME}-SideStore-LiveContainer.ipa"
+            mv build/ipa-export/*.ipa "build/${PRODUCT_NAME}-SideStore-LiveContainer.ipa"
+          else
+            echo "==> Building unsigned IPA for SideStore & LiveContainer"
+            xcodebuild archive \
+              -project "${PRODUCT_NAME}.xcodeproj" \
+              -scheme "${PRODUCT_NAME}" \
+              -configuration Release \
+              -destination "generic/platform=iOS" \
+              -archivePath "build/${PRODUCT_NAME}.xcarchive" \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGNING_ALLOWED=NO \
+              AD_HOC_CODE_SIGNING_ALLOWED=YES \
+              MARKETING_VERSION="${APP_VERSION}"
 
-      - name: Archive Unsigned IPA for SideStore & LiveContainer
-        if: ${{ env.SIGNING_MODE != 'apple-cert-p12' || secrets.APPLE_P12_BASE64 == '' }}
-        working-directory: ios-wrapper
-        run: |
-          xcodebuild archive \
-            -project "${PRODUCT_NAME}.xcodeproj" \
-            -scheme "${PRODUCT_NAME}" \
-            -configuration Release \
-            -destination "generic/platform=iOS" \
-            -archivePath "build/${PRODUCT_NAME}.xcarchive" \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            MARKETING_VERSION="${APP_VERSION}"
-
-          ./scripts/package-sidestore-ipa.sh
+            ./scripts/package-sidestore-ipa.sh
+          fi
 
       - name: Compute IPA metadata & update sidestore-source.json
         id: ipa_meta
